@@ -41,7 +41,7 @@ on:
 jobs:
   prepare:
     name: Prepare
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     outputs:
       files: ${{ steps.files-array.outputs.files }}
       version: ${{ steps.version.outputs.version }}
@@ -71,7 +71,7 @@ jobs:
   build:
     name: ${{ matrix.file }}
     needs: [prepare]
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -107,7 +107,7 @@ jobs:
     needs:
       - prepare
       - build
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     if: inputs.combined-name != ''
     steps:
       - name: Download artifacts

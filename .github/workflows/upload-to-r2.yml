@@ -11,7 +11,7 @@ on:
 jobs:
   upload:
     name: Upload
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4.3.0
