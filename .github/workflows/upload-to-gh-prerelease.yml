@@ -44,3 +44,5 @@ jobs:
         with:
           files: output/*
           tag_name: ${{ inputs.version }}
+          draft: false
+          prerelease: true
