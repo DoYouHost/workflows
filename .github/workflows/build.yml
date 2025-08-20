@@ -142,7 +142,11 @@ jobs:
             popd
           done
           popd
-          jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' files/*/$version/manifest.json > output/$version/manifest.json
+          
+          manifests=$(find files -name "manifest.json" -path "*/$version/*")
+          if [ -n "$manifests" ]; then
+            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' $manifests > output/$version/manifest.json
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
