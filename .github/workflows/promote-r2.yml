@@ -38,13 +38,43 @@ jobs:
           mkdir -p output
           version="${{ inputs.version }}"
           manifest_filename="${{ inputs.manifest-filename }}"
-          for device in files/*; do
-            device=$(basename $device)
-            mkdir -p output/$device
-            jq --arg version "$version" \
-              '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
-              files/$device/$version/manifest.json > output/$device/$manifest_filename
+          echo "Version: $version"
+          echo "Manifest filename: $manifest_filename"
+          echo "Files directory contents:"
+          ls -la files/
+          
+          for device_path in files/*; do
+            if [ -d "$device_path" ]; then
+              device=$(basename "$device_path")
+              echo "Processing device: $device"
+              echo "Device path: $device_path"
+              
+              manifest_path="$device_path/$version/manifest.json"
+              echo "Looking for manifest at: $manifest_path"
+              
+              if [ -f "$manifest_path" ]; then
+                echo "Found manifest file"
+                mkdir -p "output/$device"
+                jq --arg version "$version" \
+                  '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
+                  "$manifest_path" > "output/$device/$manifest_filename"
+                echo "Created manifest for device $device"
+              else
+                echo "Warning: Manifest not found at $manifest_path"
+                echo "Available files in $device_path:"
+                ls -la "$device_path/" || echo "Device path not accessible"
+                if [ -d "$device_path/$version" ]; then
+                  echo "Version directory exists, contents:"
+                  ls -la "$device_path/$version/"
+                else
+                  echo "Version directory does not exist"
+                fi
+              fi
+            fi
           done
+          
+          echo "Final output contents:"
+          find output -type f -name "*.json" || echo "No manifest files created"
 
       - name: Upload ${{ inputs.manifest-filename }} to R2
         uses: ryand56/r2-upload-action@v1.4
