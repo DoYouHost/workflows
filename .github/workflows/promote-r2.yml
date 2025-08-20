@@ -38,41 +38,27 @@ jobs:
           mkdir -p output
           version="${{ inputs.version }}"
           manifest_filename="${{ inputs.manifest-filename }}"
-          echo "Version: $version"
-          echo "Manifest filename: $manifest_filename"
-          echo "Files directory contents:"
-          ls -la files/
-          
-          # Check if we have version directory directly in files/
+
           if [ -d "files/$version" ]; then
-            echo "Found version directory directly: files/$version"
             manifest_path="files/$version/manifest.json"
-            
+
             if [ -f "$manifest_path" ]; then
-              echo "Found manifest file at $manifest_path"
-              
-              # Copy the version directory (keeps original manifest.json)
               mkdir -p "output/$version"
               cp -r "files/$version/"* "output/$version/"
-              echo "Copied version $version directory"
-              
-              # Also create manifest-beta.json in root with updated paths
+
               jq --arg version "$version" \
                 '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
                 "$manifest_path" > "output/$manifest_filename"
-              echo "Created $manifest_filename in output root"
             else
               echo "Error: Manifest not found at $manifest_path"
               exit 1
             fi
           else
-            # Original logic for device/version structure
             device_path=$(find files -maxdepth 1 -type d ! -name files | head -1)
             if [ -n "$device_path" ]; then
               device=$(basename "$device_path")
-              echo "Using device: $device"
               manifest_path="$device_path/$version/manifest.json"
-              
+
               if [ -f "$manifest_path" ]; then
                 mkdir -p "output/$version"
                 cp -r "$device_path/$version/"* "output/$version/"
@@ -88,9 +74,6 @@ jobs:
               exit 1
             fi
           fi
-          
-          echo "Final output contents:"
-          find output -type f
 
       - name: Upload ${{ inputs.manifest-filename }} to R2
         uses: ryand56/r2-upload-action@v1.4
