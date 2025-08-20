@@ -99,7 +99,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: ${{ inputs.combined-name != '' && format('{0}-{1}', needs.prepare.outputs.artifact-prefix, steps.esphome-build.outputs.name) || steps.esphome-build.outputs.original-name }}
+          name: ${{ inputs.combined-name != '' && format('{0}-{1}', needs.prepare.outputs.artifact-prefix, steps.esphome-build.outputs.name) || steps.esphome-build.outputs.name }}
           path: output
 
   combine:
