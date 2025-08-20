@@ -43,38 +43,42 @@ jobs:
           echo "Files directory contents:"
           ls -la files/
           
-          for device_path in files/*; do
-            if [ -d "$device_path" ]; then
-              device=$(basename "$device_path")
-              echo "Processing device: $device"
-              echo "Device path: $device_path"
+          # Find the first device directory and use its manifest
+          device_path=$(find files -maxdepth 1 -type d ! -name files | head -1)
+          if [ -n "$device_path" ]; then
+            device=$(basename "$device_path")
+            echo "Using device: $device"
+            
+            manifest_path="$device_path/$version/manifest.json"
+            echo "Looking for manifest at: $manifest_path"
+            
+            if [ -f "$manifest_path" ]; then
+              echo "Found manifest file"
               
-              manifest_path="$device_path/$version/manifest.json"
-              echo "Looking for manifest at: $manifest_path"
+              # Copy the version directory (keeps original manifest.json)
+              mkdir -p "output/$version"
+              cp -r "$device_path/$version/"* "output/$version/"
+              echo "Copied version $version directory"
               
-              if [ -f "$manifest_path" ]; then
-                echo "Found manifest file"
-                mkdir -p "output/$device"
-                jq --arg version "$version" \
-                  '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
-                  "$manifest_path" > "output/$device/$manifest_filename"
-                echo "Created manifest for device $device"
-              else
-                echo "Warning: Manifest not found at $manifest_path"
-                echo "Available files in $device_path:"
-                ls -la "$device_path/" || echo "Device path not accessible"
-                if [ -d "$device_path/$version" ]; then
-                  echo "Version directory exists, contents:"
-                  ls -la "$device_path/$version/"
-                else
-                  echo "Version directory does not exist"
-                fi
-              fi
+              # Also create manifest-beta.json in root with updated paths
+              jq --arg version "$version" \
+                '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
+                "$manifest_path" > "output/$manifest_filename"
+              echo "Created $manifest_filename in output root"
+            else
+              echo "Error: Manifest not found at $manifest_path"
+              echo "Available files in $device_path:"
+              ls -la "$device_path/" || echo "Device path not accessible"
+              exit 1
             fi
-          done
+          else
+            echo "Error: No device directory found in files/"
+            ls -la files/
+            exit 1
+          fi
           
           echo "Final output contents:"
-          find output -type f -name "*.json" || echo "No manifest files created"
+          find output -type f
 
       - name: Upload ${{ inputs.manifest-filename }} to R2
         uses: ryand56/r2-upload-action@v1.4
