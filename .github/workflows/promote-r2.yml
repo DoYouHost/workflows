@@ -15,12 +15,12 @@ on:
         description: Channel to upload to. "beta" or "production"
         required: false
         type: string
-        default: "production"
+        default: "beta"
       manifest-filename:
         description: Filename of the manifest to write.
         required: false
         type: string
-        default: manifest.json
+        default: manifest-beta.json
 
 jobs:
   promote:
@@ -29,7 +29,7 @@ jobs:
     environment: ${{ inputs.channel }}
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4.3.0
+        uses: actions/download-artifact@v5.0.0
         with:
           path: files
 
@@ -49,9 +49,9 @@ jobs:
       - name: Upload ${{ inputs.manifest-filename }} to R2
         uses: ryand56/r2-upload-action@v1.4
         with:
-          r2-account-id: ${{ secrets.CLOUDFLARE_R2_ACCOUNT_ID }}
-          r2-access-key-id: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
-          r2-secret-access-key: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
-          r2-bucket: ${{ secrets.CLOUDFLARE_R2_BUCKET }}
+          r2-account-id: ${{ secrets.CF_ACCOUNT_ID }}
+          r2-access-key-id: ${{ secrets.CF_ACCESS_KEY_ID }}
+          r2-secret-access-key: ${{ secrets.CF_SECRET_ACCESS_KEY }}
+          r2-bucket: ${{ secrets.CF_BUCKET_NAME }}
           source-dir: output
           destination-dir: ${{ inputs.directory }}/
