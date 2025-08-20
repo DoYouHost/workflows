@@ -132,16 +132,41 @@ jobs:
       - name: Combine all parts into a single manifest
         run: |
           version="${{ needs.prepare.outputs.version }}"
+          echo "Version: $version"
+          echo "Current directory contents:"
+          ls -la
+          echo "Files directory contents:"
+          ls -la files/ || echo "Files directory not found"
+          
           mkdir -p "output/$version"
           pushd files
           for device in *; do
+            echo "Processing device: $device"
             pushd $device
-            pushd $version
-            cp * "../../../output/$version/"
-            popd
+            echo "Device $device contents:"
+            ls -la
+            
+            if [ -d "$version" ]; then
+              echo "Found version directory $version"
+              pushd $version
+              echo "Version directory contents:"
+              ls -la
+              cp * "../../../output/$version/"
+              popd
+            else
+              echo "Warning: Version directory $version not found in device $device"
+              echo "Available directories:"
+              ls -la
+              # Try to find any version-like directories
+              echo "Looking for version-like directories:"
+              find . -type d -name "*.*.*" || echo "No version directories found"
+            fi
             popd
           done
           popd
+          
+          echo "Final output directory contents:"
+          ls -la output/$version/ || echo "Output directory not found"
           
           manifests=$(find files -name "manifest.json" -path "*/$version/*")
           if [ -n "$manifests" ]; then
