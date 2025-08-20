@@ -5,7 +5,7 @@
 
 version: 2
 updates:
-  - package-ecosystem: "github-actions" # See documentation for possible values
-    directory: "/" # Location of package manifests
+  - package-ecosystem: "github-actions" # Scan GitHub Actions used in workflows
+    directory: "/.github/workflows" # Location of workflow files to scan for `uses:` entries
     schedule:
       interval: "weekly"
