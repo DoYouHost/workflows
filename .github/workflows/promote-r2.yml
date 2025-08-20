@@ -43,21 +43,17 @@ jobs:
           echo "Files directory contents:"
           ls -la files/
           
-          # Find the first device directory and use its manifest
-          device_path=$(find files -maxdepth 1 -type d ! -name files | head -1)
-          if [ -n "$device_path" ]; then
-            device=$(basename "$device_path")
-            echo "Using device: $device"
-            
-            manifest_path="$device_path/$version/manifest.json"
-            echo "Looking for manifest at: $manifest_path"
+          # Check if we have version directory directly in files/
+          if [ -d "files/$version" ]; then
+            echo "Found version directory directly: files/$version"
+            manifest_path="files/$version/manifest.json"
             
             if [ -f "$manifest_path" ]; then
-              echo "Found manifest file"
+              echo "Found manifest file at $manifest_path"
               
               # Copy the version directory (keeps original manifest.json)
               mkdir -p "output/$version"
-              cp -r "$device_path/$version/"* "output/$version/"
+              cp -r "files/$version/"* "output/$version/"
               echo "Copied version $version directory"
               
               # Also create manifest-beta.json in root with updated paths
@@ -67,14 +63,30 @@ jobs:
               echo "Created $manifest_filename in output root"
             else
               echo "Error: Manifest not found at $manifest_path"
-              echo "Available files in $device_path:"
-              ls -la "$device_path/" || echo "Device path not accessible"
               exit 1
             fi
           else
-            echo "Error: No device directory found in files/"
-            ls -la files/
-            exit 1
+            # Original logic for device/version structure
+            device_path=$(find files -maxdepth 1 -type d ! -name files | head -1)
+            if [ -n "$device_path" ]; then
+              device=$(basename "$device_path")
+              echo "Using device: $device"
+              manifest_path="$device_path/$version/manifest.json"
+              
+              if [ -f "$manifest_path" ]; then
+                mkdir -p "output/$version"
+                cp -r "$device_path/$version/"* "output/$version/"
+                jq --arg version "$version" \
+                  '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
+                  "$manifest_path" > "output/$manifest_filename"
+              else
+                echo "Error: Manifest not found at $manifest_path"
+                exit 1
+              fi
+            else
+              echo "Error: No valid structure found"
+              exit 1
+            fi
           fi
           
           echo "Final output contents:"
