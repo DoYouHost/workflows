@@ -82,7 +82,7 @@ jobs:
         uses: actions/checkout@v4.2.2
       - name: Replace project version
         run: |
-          sed -i "s/version: dev/version: ${{ needs.prepare.outputs.version }}/g" ${{ matrix.file }}
+          sed -i 's/version: "[^"]*"/version: "${{ needs.prepare.outputs.version }}"/g' ${{ matrix.file }}
       - name: Build Firmware
         uses: esphome/build-action@v7.0.0
         id: esphome-build
