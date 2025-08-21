@@ -130,6 +130,43 @@ jobs:
         with:
           name: ${{ steps.artifacts.outputs.artifacts }}
 
+      - name: Debug - Check file structure
+        run: |
+          echo "=== Debug: File structure analysis ==="
+          echo "Version: ${{ needs.prepare.outputs.version }}"
+          echo "Current directory: $(pwd)"
+          echo ""
+          echo "Files directory contents:"
+          ls -la files/
+          echo ""
+          echo "Checking each device directory:"
+          for device in files/*; do
+            if [ -d "$device" ]; then
+              echo "========================================="
+              echo "Device: $(basename $device)"
+              echo "Contents of $device:"
+              ls -la "$device/"
+              echo ""
+              echo "Looking for version directory: ${{ needs.prepare.outputs.version }}"
+              if [ -d "$device/${{ needs.prepare.outputs.version }}" ]; then
+                echo "✅ Found: $device/${{ needs.prepare.outputs.version }}"
+                ls -la "$device/${{ needs.prepare.outputs.version }}/"
+              else
+                echo "❌ NOT found: $device/${{ needs.prepare.outputs.version }}"
+              fi
+              echo ""
+              echo "Looking for output/version directory: output/${{ needs.prepare.outputs.version }}"
+              if [ -d "$device/output/${{ needs.prepare.outputs.version }}" ]; then
+                echo "✅ Found: $device/output/${{ needs.prepare.outputs.version }}"
+                ls -la "$device/output/${{ needs.prepare.outputs.version }}/"
+              else
+                echo "❌ NOT found: $device/output/${{ needs.prepare.outputs.version }}"
+              fi
+              echo ""
+            fi
+          done
+          echo "========================================="
+
       - name: Combine all parts into a single manifest
         run: |
           version="${{ needs.prepare.outputs.version }}"
