@@ -131,28 +131,20 @@ jobs:
 
       - name: Combine all parts into a single manifest
         run: |
+          set -e
           version="${{ needs.prepare.outputs.version }}"
-
           mkdir -p "output/$version"
           pushd files
           for device in *; do
-            pushd $device
-
-            if [ -d "$version" ]; then
-              pushd $version
-              cp * "../../../output/$version/"
-              popd
-            else
-              find . -type d -name "*.*.*" || true
-            fi
+            pushd "$device"
+            pushd "$version"
+            cp * "../../../output/$version/"
+            popd
             popd
           done
           popd
-
-          manifests=$(find files -name "manifest.json" -path "*/$version/*")
-          if [ -n "$manifests" ]; then
-            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' $manifests > output/$version/manifest.json
-          fi
+          jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
+            files/*/$version/manifest.json > output/$version/manifest.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2

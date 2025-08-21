@@ -30,49 +30,38 @@ jobs:
           path: files
 
       - name: Copy files to output
-        run: |-
+        run: |
+          set -e
           shopt -s nullglob
           mkdir output
-          version="${{ inputs.version }}"
-          echo "=== DEBUG INFO ==="
-          echo "Input version: $version"
-          echo "Files directory contents:"
-          ls -la files/
-          echo "==================="
+          version='${{ inputs.version }}'
+          echo "Listing files:"
+          find files -maxdepth 3 -type f -print
           pushd files
           for device in *; do
-            echo "=== Processing folder: '$device' ==="
-            echo "Current working directory: $(pwd)"
-            pushd $device
-            echo "Contents of device folder '$device':"
-            ls -la
-            if [ -d \"$version\" ]; then
-              pushd $version
-              echo "Contents of version directory '$version':"
-              ls -la
-              cp manifest.json ../../../output/$device.manifest.json
-              for bin in *.{bin,elf}; do
-                [ -f \"$bin\" ] && md5sum $bin | head -c 32 > ../../../output/$bin.md5 && cp $bin ../../../output/
-              done
-              popd
+            [ -d "$device" ] || continue
+            pushd "$device"
+            if [ "$device" != "$version" ]; then
+              pushd "$version"
+              output_path="../../../output/"
             else
-              echo "No version directory '$version' found, checking for direct manifest..."
-              if [ -f \"manifest.json\" ]; then
-                cp manifest.json ../../output/$device.manifest.json
-                for bin in *.{bin,elf}; do
-                  [ -f \"$bin\" ] && md5sum $bin | head -c 32 > ../../output/$bin.md5 && cp $bin ../../output/
-                done
-              else
-                echo "No manifest.json found in device folder"
-              fi
+              output_path="../../output/"
+            fi
+            cp manifest.json "${output_path}${device}.manifest.json"
+            for bin in *.{bin,elf}; do
+              [ -f "$bin" ] || continue
+              md5sum "$bin" | head -c 32 > "${output_path}${bin}.md5"
+              sha256sum "$bin" | head -c 64 > "${output_path}${bin}.sha256"
+              cp "$bin" "${output_path}"
+            done
+            if [ "$device" != "$version" ]; then
+              popd
             fi
             popd
-            echo "=== Finished processing '$device' ==="
           done
           popd
-          echo "=== FINAL OUTPUT ==="
-          echo "Contents of output directory:"
-          ls -la output/
+          echo "Output listing:"
+          ls -la output
           echo "===================="
 
       - name: Upload files to release
