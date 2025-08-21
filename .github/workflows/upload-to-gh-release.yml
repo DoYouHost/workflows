@@ -12,6 +12,10 @@ on:
         required: false
         default: false
         type: boolean
+    secrets:
+      PAT_TOKEN:
+        description: 'Optional Personal Access Token for creating releases'
+        required: false
 
 jobs:
   upload:
@@ -63,3 +67,4 @@ jobs:
           tag_name: ${{ inputs.version }}
           draft: false
           prerelease: ${{ inputs.prerelease }}
+          token: ${{ secrets.PAT_TOKEN || github.token }}
