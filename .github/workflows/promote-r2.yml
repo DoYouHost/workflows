@@ -28,10 +28,45 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.channel }}
     steps:
-      - name: Download artifacts
+      # Try downloading artifacts first (for workflows that have them)
+      - name: Download artifacts (if available)
         uses: actions/download-artifact@v5.0.0
+        continue-on-error: true
         with:
           path: files
+
+      # If no artifacts, download from R2
+      - name: Download from R2 if no artifacts
+        run: |
+          VERSION="${{ inputs.version }}"
+          DIRECTORY="${{ inputs.directory }}"
+          
+          # Check if we have artifacts
+          if [ ! -d "files" ] || [ -z "$(ls -A files)" ]; then
+            echo "No artifacts found, downloading from R2..."
+            
+            # Install AWS CLI for S3-compatible operations
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+            
+            # Configure AWS CLI for Cloudflare R2
+            aws configure set aws_access_key_id ${{ secrets.CF_ACCESS_KEY_ID }}
+            aws configure set aws_secret_access_key ${{ secrets.CF_SECRET_ACCESS_KEY }}
+            aws configure set region auto
+            
+            # Download files from R2
+            mkdir -p files/$VERSION
+            aws s3 cp s3://${{ secrets.CF_BUCKET_NAME }}/$DIRECTORY/$VERSION/ files/$VERSION/ \
+              --recursive \
+              --endpoint-url https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+            
+            echo "✅ Downloaded files from R2"
+          else
+            echo "✅ Using artifacts from current workflow"
+          fi
+          
+          ls -la files/
 
       - name: Build ${{ inputs.manifest-filename }}
         run: |
@@ -41,11 +76,11 @@ jobs:
 
           if [ -d "files/$version" ]; then
             manifest_path="files/$version/manifest.json"
-
+            
             if [ -f "$manifest_path" ]; then
               mkdir -p "output/$version"
               cp -r "files/$version/"* "output/$version/"
-
+              
               jq --arg version "$version" \
                 '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
                 "$manifest_path" > "output/$manifest_filename"
@@ -58,7 +93,7 @@ jobs:
             if [ -n "$device_path" ]; then
               device=$(basename "$device_path")
               manifest_path="$device_path/$version/manifest.json"
-
+              
               if [ -f "$manifest_path" ]; then
                 mkdir -p "output/$version"
                 cp -r "$device_path/$version/"* "output/$version/"
