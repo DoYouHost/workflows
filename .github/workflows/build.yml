@@ -172,16 +172,43 @@ jobs:
           version="${{ needs.prepare.outputs.version }}"
           mkdir -p "output/$version"
           pushd files
-          for device in *; do
-            pushd $device
-            pushd $version
-            cp * "../../../output/$version/"
-            popd
-            popd
-          done
+
+          # Check if we have version directories directly (new structure)
+          if [ -d "$version" ]; then
+            echo "Found version directory directly: $version"
+            cp "$version"/* "../output/$version/"
+          else
+            # Fallback to old structure (device/version)
+            for device in *; do
+              pushd $device
+              if [ -d "$version" ]; then
+                pushd $version
+                cp * "../../../output/$version/"
+                popd
+              elif [ -d "output/$version" ]; then
+                pushd "output/$version"
+                cp * "../../../output/$version/"
+                popd
+              fi
+              popd
+            done
+          fi
+
           popd
-          jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
-            files/*/$version/manifest.json > output/$version/manifest.json
+
+          # Handle manifest.json combining
+          if [ -f "files/$version/manifest.json" ]; then
+            # Direct version structure
+            cp "files/$version/manifest.json" "output/$version/manifest.json"
+          else
+            # Old structure - combine manifests
+            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
+              files/*/$version/manifest.json files/*/output/$version/manifest.json > output/$version/manifest.json 2>/dev/null || \
+            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
+              files/*/$version/manifest.json > output/$version/manifest.json 2>/dev/null || \
+            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
+              files/*/output/$version/manifest.json > output/$version/manifest.json
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
