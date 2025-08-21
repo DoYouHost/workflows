@@ -52,6 +52,7 @@ jobs:
         run: |
           files=$(echo "${{ inputs.files }}" | jq -RcSn '[inputs | select(length>0)]')
           echo files=$files >> $GITHUB_OUTPUT
+
       - name: Generate version
         id: version
         run: |
@@ -60,8 +61,8 @@ jobs:
           else
             version=dev-$(date +'%Y%m%d-%H%M')
           fi
-
           echo version=$version >> $GITHUB_OUTPUT
+
       - name: Generated random artifact prefix
         id: artifact-name
         run: |
@@ -79,10 +80,12 @@ jobs:
         file: ${{ fromJson(needs.prepare.outputs.files) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v5.0.0
+
       - name: Replace project version
         run: |
           sed -i 's/version: "[^"]*"/version: "${{ needs.prepare.outputs.version }}"/g' ${{ matrix.file }}
+
       - name: Build Firmware
         uses: esphome/build-action@v7.0.0
         id: esphome-build
@@ -92,14 +95,16 @@ jobs:
           complete-manifest: true
           release-summary: ${{ inputs.release-summary }}
           release-url: ${{ inputs.release-url }}
+
       - name: Move files for versioning
         run: |
           mkdir -p output/${{ needs.prepare.outputs.version }}
           mv ${{ steps.esphome-build.outputs.name }}/* output/${{ needs.prepare.outputs.version }}/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
         with:
-          name: ${{ inputs.combined-name != '' && format('{0}-{1}', needs.prepare.outputs.artifact-prefix, steps.esphome-build.outputs.name) || steps.esphome-build.outputs.name }}
+          name: ${{ inputs.combined-name != '' && format('{0}-{1}', needs.prepare.outputs.artifact-prefix, steps.esphome-build.outputs.name) || steps.esphome-build.outputs.original-name }}
           path: output
 
   combine:
@@ -111,7 +116,7 @@ jobs:
     if: inputs.combined-name != ''
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4.3.0
+        uses: actions/download-artifact@v5.0.0
         with:
           path: files
           pattern: ${{ needs.prepare.outputs.artifact-prefix }}-*
@@ -132,19 +137,19 @@ jobs:
       - name: Combine all parts into a single manifest
         run: |
           set -e
-          version="${{ needs.prepare.outputs.version }}"
-          mkdir -p "output/$version"
-          pushd files
-          for device in *; do
-            pushd "$device"
-            pushd "$version"
-            cp * "../../../output/$version/"
+            version="${{ needs.prepare.outputs.version }}"
+            mkdir -p "output/$version"
+            pushd files
+            for device in *; do
+              pushd "$device"
+              pushd "$version"
+              cp * "../../../output/$version/"
+              popd
+              popd
+            done
             popd
-            popd
-          done
-          popd
-          jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
-            files/*/$version/manifest.json > output/$version/manifest.json
+            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
+              files/*/$version/manifest.json > output/$version/manifest.json
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
