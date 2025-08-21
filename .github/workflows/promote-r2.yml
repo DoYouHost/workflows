@@ -45,10 +45,17 @@ jobs:
           if [ ! -d "files" ] || [ -z "$(ls -A files)" ]; then
             echo "No artifacts found, downloading from R2..."
             
-            # Install AWS CLI for S3-compatible operations
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip awscliv2.zip
-            sudo ./aws/install
+            # Check if AWS CLI is available
+            if command -v aws &> /dev/null; then
+              echo "✅ AWS CLI already available"
+              aws --version
+            else
+              echo "AWS CLI not found, installing..."
+              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip awscliv2.zip
+              sudo ./aws/install
+              echo "✅ AWS CLI installed"
+            fi
             
             # Configure AWS CLI for Cloudflare R2
             aws configure set aws_access_key_id ${{ secrets.CF_ACCESS_KEY_ID }}
