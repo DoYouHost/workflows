@@ -34,13 +34,11 @@ jobs:
           shopt -s nullglob
           mkdir output
           version="${{ inputs.version }}"
-          
           echo "=== DEBUG INFO ==="
           echo "Input version: $version"
           echo "Files directory contents:"
           ls -la files/
           echo "==================="
-          
           pushd files
           for device in *; do
             echo "=== Processing folder: '$device' ==="
@@ -48,31 +46,21 @@ jobs:
             pushd $device
             echo "Contents of device folder '$device':"
             ls -la
-            
-            if [ -d "$version" ]; then
-              echo "Found version directory '$version', entering..."
+            if [ -d \"$version\" ]; then
               pushd $version
               echo "Contents of version directory '$version':"
               ls -la
-              echo "Copying manifest.json to: $device.manifest.json"
               cp manifest.json ../../../output/$device.manifest.json
               for bin in *.{bin,elf}; do
-                echo "Processing binary: $bin"
-                md5sum $bin | head -c 32 > ../../../output/$bin.md5
-                cp $bin ../../../output/
+                [ -f \"$bin\" ] && md5sum $bin | head -c 32 > ../../../output/$bin.md5 && cp $bin ../../../output/
               done
               popd
             else
               echo "No version directory '$version' found, checking for direct manifest..."
-              if [ -f "manifest.json" ]; then
-                echo "Found direct manifest.json, copying to: $device.manifest.json"
+              if [ -f \"manifest.json\" ]; then
                 cp manifest.json ../../output/$device.manifest.json
                 for bin in *.{bin,elf}; do
-                  if [ -f "$bin" ]; then
-                    echo "Processing binary: $bin"
-                    md5sum $bin | head -c 32 > ../../output/$bin.md5
-                    cp $bin ../../output/
-                  fi
+                  [ -f \"$bin\" ] && md5sum $bin | head -c 32 > ../../output/$bin.md5 && cp $bin ../../output/
                 done
               else
                 echo "No manifest.json found in device folder"
@@ -82,7 +70,6 @@ jobs:
             echo "=== Finished processing '$device' ==="
           done
           popd
-          
           echo "=== FINAL OUTPUT ==="
           echo "Contents of output directory:"
           ls -la output/
