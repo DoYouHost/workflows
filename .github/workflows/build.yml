@@ -60,7 +60,6 @@ jobs:
           else
             version=dev-$(date +'%Y%m%d-%H%M')
           fi
-
           echo version=$version >> $GITHUB_OUTPUT
       - name: Generated random artifact prefix
         id: artifact-name
@@ -94,8 +93,11 @@ jobs:
           release-url: ${{ inputs.release-url }}
       - name: Move files for versioning
         run: |
-          mkdir -p output/${{ needs.prepare.outputs.version }}
-          mv ${{ steps.esphome-build.outputs.name }}/* output/${{ needs.prepare.outputs.version }}/
+          version='${{ needs.prepare.outputs.version }}'
+          mkdir -p "output/$version"
+          mv "${{ steps.esphome-build.outputs.name }}"/* "output/$version/"
+          echo "Layout:"
+          find output -maxdepth 2 -type f -printf '%P\n'
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
         with:
@@ -115,7 +117,6 @@ jobs:
         with:
           path: files
           pattern: ${{ needs.prepare.outputs.artifact-prefix }}-*
-
       - name: Get artifact names
         id: artifacts
         run: |
@@ -123,28 +124,27 @@ jobs:
           echo "artifacts<<EOF" >> $GITHUB_OUTPUT
           echo "$artifacts" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
-
       - name: Delete prefixed artifacts
         uses: geekyeggo/delete-artifact@v5.1.0
         with:
           name: ${{ steps.artifacts.outputs.artifacts }}
-
       - name: Combine all parts into a single manifest
         run: |
-          version="${{ needs.prepare.outputs.version }}"
+          set -e
+          version='${{ needs.prepare.outputs.version }}'
           mkdir -p "output/$version"
-          pushd files
+          pushd files >/dev/null
           for device in *; do
-            pushd $device
-            pushd $version
+            [ -d "$device" ] || continue
+            pushd "$device" >/dev/null
+            pushd "$version" >/dev/null
             cp * "../../../output/$version/"
-            popd
-            popd
+            popd >/dev/null
+            popd >/dev/null
           done
-          popd
+          popd >/dev/null
           jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
             files/*/$version/manifest.json > output/$version/manifest.json
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4.6.2
         with:
