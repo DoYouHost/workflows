@@ -46,7 +46,7 @@ on:
 jobs:
   prepare:
     name: Prepare
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     outputs:
       files: ${{ steps.files-array.outputs.files }}
       version: ${{ steps.version.outputs.version }}
@@ -91,7 +91,7 @@ jobs:
   build:
     name: ${{ matrix.file }}
     needs: [prepare]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -178,7 +178,7 @@ jobs:
   combine:
     name: Combine manifests
     needs: [prepare, build]
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     if: inputs.combined-name != ''
     steps:
       - name: Download device artifacts
