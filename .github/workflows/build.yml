@@ -126,14 +126,26 @@ jobs:
           complete-manifest: true
           release-summary: ${{ inputs.release-summary }}
           release-url: ${{ inputs.release-url }}
-      - name: Debug – Raw build output listing
+      - name: Debug – Raw build output directories
         if: inputs.debug == true
         run: |
           echo "::group::Raw build output directories"
-          ls -R1
+          find . -maxdepth 3 -type d -print
           echo "::endgroup::"
+
           echo "::group::Manifest content (raw)"
-          find . -name manifest.json -maxdepth 5 -print -exec sed -n '1,120p' {} \\;
+          set +e
+          manifests=$(find . -maxdepth 5 -name manifest.json)
+          if [ -z "$manifests" ]; then
+            echo "No manifest.json found"
+          else
+            for f in $manifests; do
+              echo "----- $f -----"
+              sed -n '1,160p' "$f"
+              echo "Build count: $(jq '.builds | length' "$f" 2>/dev/null || echo '?')"
+              echo
+            done
+          fi
           echo "::endgroup::"
       - name: Normalize output structure
         run: |
