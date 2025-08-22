@@ -110,7 +110,9 @@ jobs:
           echo "::endgroup::"
       - name: Replace project version
         run: |
-          sed -i "s/version: dev/version: ${{ needs.prepare.outputs.version }}/g" ${{ matrix.file }}
+          sed -i -E "s/(project:[^\n]*\n[[:space:]]+name:[^\n]*\n[[:space:]]+version:[[:space:]]*)\"?dev\"?/\\1${{ needs.prepare.outputs.version }}/" ${{ matrix.file }}
+          grep -q '${{ needs.prepare.outputs.version }}' ${{ matrix.file }} || \
+            sed -i -E "s/(version:[[:space:]]*)\"?dev\"?/\\1${{ needs.prepare.outputs.version }}/" ${{ matrix.file }}
       - name: Debug – YAML excerpt after version replace
         if: inputs.debug == true
         run: |
