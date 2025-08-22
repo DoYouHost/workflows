@@ -24,48 +24,50 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download Artifact
-        uses: actions/download-artifact@v5.0.0
+      - name: Download Artifact(s)
+        uses: actions/download-artifact@v5
         with:
           path: files
 
-      - name: Copy files to output
+      - name: Assemble output (no checksums)
         run: |
-          set -e
-          shopt -s nullglob
-          mkdir output
+          set -euo pipefail
           version='${{ inputs.version }}'
-          echo "Listing files:"
-          find files -maxdepth 3 -type f -print
-          pushd files
-          for device in *; do
-            [ -d "$device" ] || continue
-            pushd "$device"
-            if [ "$device" != "$version" ]; then
-              pushd "$version"
-              output_path="../../../output/"
-            else
-              output_path="../../output/"
+          mkdir -p output
+          echo "::group::Input artifact tree"
+          find files -maxdepth 4 -type f -print
+          echo "::endgroup::"
+
+          mapfile -t version_dirs < <(find files -type d -path "*/$version")
+          if [ ${#version_dirs[@]} -eq 0 ]; then
+            echo "ERROR: no version dirs for $version" >&2
+            exit 1
+          fi
+
+          manifest_copied=false
+          for d in "${version_dirs[@]}"; do
+            if [ -f "$d/manifest.json" ] && [ "$manifest_copied" = false ]; then
+              cp "$d/manifest.json" output/manifest.json
+              manifest_copied=true
+              echo "Using manifest from: $d"
             fi
-            cp manifest.json "${output_path}${device}.manifest.json"
-            for bin in *.{bin,elf}; do
-              [ -f "$bin" ] || continue
-              md5sum "$bin" | head -c 32 > "${output_path}${bin}.md5"
-              sha256sum "$bin" | head -c 64 > "${output_path}${bin}.sha256"
-              cp "$bin" "${output_path}"
+            for f in "$d"/*.{bin,elf}; do
+              [ -f "$f" ] || continue
+              cp "$f" "output/$(basename "$f")"
             done
-            if [ "$device" != "$version" ]; then
-              popd
-            fi
-            popd
           done
-          popd
-          echo "Output listing:"
-          ls -la output
-          echo "===================="
+
+          if [ "$manifest_copied" = false ]; then
+            echo "ERROR: manifest.json not found" >&2
+            exit 1
+          fi
+
+          echo "::group::Output listing"
+          ls -l output
+          echo "::endgroup::"
 
       - name: Upload files to release
-        uses: softprops/action-gh-release@v2.3.2
+        uses: softprops/action-gh-release@v2
         with:
           files: output/*
           tag_name: ${{ inputs.version }}
