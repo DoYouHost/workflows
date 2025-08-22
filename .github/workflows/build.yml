@@ -32,6 +32,11 @@ on:
         required: false
         type: string
         default: ""
+      debug:
+        description: Enable verbose debug output
+        required: false
+        type: boolean
+        default: false
 
     outputs:
       version:
@@ -47,6 +52,14 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       artifact-prefix: ${{ steps.artifact-name.outputs.artifact-prefix }}
     steps:
+      - name: Debug – Environment (pre-prepare)
+        if: inputs.debug == true
+        run: |
+          echo "::group::Environment"
+          uname -a || true
+          echo "Shell: $SHELL"
+          echo "Working dir: $PWD"
+          echo "::endgroup::"
       - name: Split files input into JSON array
         id: files-array
         run: |
@@ -60,13 +73,20 @@ jobs:
           else
             version=dev-$(date +'%Y%m%d-%H%M')
           fi
-
           echo version=$version >> $GITHUB_OUTPUT
       - name: Generated random artifact prefix
         id: artifact-name
         run: |
           artifact_prefix=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16; echo)
           echo artifact-prefix=$artifact_prefix >> $GITHUB_OUTPUT
+      - name: Debug – Prepare summary
+        if: inputs.debug == true
+        run: |
+          echo "::group::Prepare Summary"
+          echo "Version: ${{ steps.version.outputs.version }}"
+          echo "Files JSON: ${{ steps.files-array.outputs.files }}"
+          echo "Artifact prefix: ${{ steps.artifact-name.outputs.artifact-prefix }}"
+          echo "::endgroup::"
 
   build:
     name: ${{ matrix.file }}
@@ -78,140 +98,140 @@ jobs:
       matrix:
         file: ${{ fromJson(needs.prepare.outputs.files) }}
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v5.0.0
+      - uses: actions/checkout@v5
+      - name: Debug – Repo tree (initial)
+        if: inputs.debug == true
+        run: |
+          echo "::group::Git Status"
+          git status --short || true
+          echo "::endgroup::"
+          echo "::group::Tree (top 200 entries)"
+          find . -maxdepth 3 -type f | head -200
+          echo "::endgroup::"
       - name: Replace project version
         run: |
           sed -i "s/version: dev/version: ${{ needs.prepare.outputs.version }}/g" ${{ matrix.file }}
+      - name: Debug – YAML excerpt after version replace
+        if: inputs.debug == true
+        run: |
+          echo "::group::YAML head (after version replace)"
+          head -60 ${{ matrix.file }} || true
+          echo "::endgroup::"
       - name: Build Firmware
-        uses: esphome/build-action@v7.0.0
         id: esphome-build
+        uses: esphome/build-action@v7.0.0
         with:
           yaml-file: ${{ matrix.file }}
           version: ${{ inputs.esphome-version }}
           complete-manifest: true
           release-summary: ${{ inputs.release-summary }}
           release-url: ${{ inputs.release-url }}
-      - name: Move files for versioning
+      - name: Debug – Raw build output listing
+        if: inputs.debug == true
         run: |
-          mkdir -p output/${{ needs.prepare.outputs.version }}
-          mv ${{ steps.esphome-build.outputs.name }}/* output/${{ needs.prepare.outputs.version }}/
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4.6.2
+          echo "::group::Raw build output directories"
+          ls -R1
+          echo "::endgroup::"
+          echo "::group::Manifest content (raw)"
+          find . -name manifest.json -maxdepth 5 -print -exec sed -n '1,120p' {} \\;
+          echo "::endgroup::"
+      - name: Normalize output structure
+        run: |
+          set -e
+          VERSION='${{ needs.prepare.outputs.version }}'
+          DEVICE_OUT='${{ steps.esphome-build.outputs.name }}'
+          mkdir -p output/$VERSION
+          mv "$DEVICE_OUT"/* output/$VERSION/
+      - name: Debug – Normalized directory
+        if: inputs.debug == true
+        run: |
+          echo "::group::Normalized ${{ steps.esphome-build.outputs.original-name }} /$VERSION"
+          find output -maxdepth 2 -type f -printf '%P (%s bytes)\\n'
+          echo "::endgroup::"
+          echo "::group::Normalized manifest preview"
+          sed -n '1,160p' output/${{ needs.prepare.outputs.version }}/manifest.json
+          echo "::endgroup::"
+      - name: Upload device artifact
+        uses: actions/upload-artifact@v4
         with:
-          # yamllint disable-line rule:line-length
-          name: ${{ inputs.combined-name != '' && format('{0}-{1}', needs.prepare.outputs.artifact-prefix, steps.esphome-build.outputs.name) || steps.esphome-build.outputs.original-name }}
+          name: ${{ format('{0}-{1}', needs.prepare.outputs.artifact-prefix, steps.esphome-build.outputs.original-name) }}
           path: output
+      - name: Post-build debug trap (on failure)
+        if: failure() && inputs.debug == true
+        run: |
+          echo "::group::Failure dump (build job)"
+          find . -maxdepth 4 -type f -printf '%P %s bytes\\n' | head -500
+          echo "::endgroup::"
 
   combine:
     name: Combine manifests
-    needs:
-      - prepare
-      - build
+    needs: [prepare, build]
     runs-on: ubuntu-latest
     if: inputs.combined-name != ''
     steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v5.0.0
+      - name: Download device artifacts
+        uses: actions/download-artifact@v5
         with:
-          path: files
+          path: devices
           pattern: ${{ needs.prepare.outputs.artifact-prefix }}-*
-
-      - name: Get artifact names
-        id: artifacts
+      - name: Debug – Device artifacts tree
+        if: inputs.debug == true
         run: |
-          artifacts=$(ls --format=single-column files)
-          echo "artifacts<<EOF" >> $GITHUB_OUTPUT
-          echo "$artifacts" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Delete prefixed artifacts
-        uses: geekyeggo/delete-artifact@v5.1.0
-        with:
-          name: ${{ steps.artifacts.outputs.artifacts }}
-
-      - name: Debug - Check file structure
+          echo "::group::Device artifacts file list"
+          find devices -type f -printf '%P (%s bytes)\\n' | head -1000
+          echo "::endgroup::"
+      - name: Create combined output
         run: |
-          echo "=== Debug: File structure analysis ==="
-          echo "Version: ${{ needs.prepare.outputs.version }}"
-          echo "Current directory: $(pwd)"
-          echo ""
-          echo "Files directory contents:"
-          ls -la files/
-          echo ""
-          echo "Checking each device directory:"
-          for device in files/*; do
-            if [ -d "$device" ]; then
-              echo "========================================="
-              echo "Device: $(basename $device)"
-              echo "Contents of $device:"
-              ls -la "$device/"
-              echo ""
-              echo "Looking for version directory: ${{ needs.prepare.outputs.version }}"
-              if [ -d "$device/${{ needs.prepare.outputs.version }}" ]; then
-                echo "✅ Found: $device/${{ needs.prepare.outputs.version }}"
-                ls -la "$device/${{ needs.prepare.outputs.version }}/"
-              else
-                echo "❌ NOT found: $device/${{ needs.prepare.outputs.version }}"
-              fi
-              echo ""
-              echo "Looking for output/version directory: output/${{ needs.prepare.outputs.version }}"
-              if [ -d "$device/output/${{ needs.prepare.outputs.version }}" ]; then
-                echo "✅ Found: $device/output/${{ needs.prepare.outputs.version }}"
-                ls -la "$device/output/${{ needs.prepare.outputs.version }}/"
-              else
-                echo "❌ NOT found: $device/output/${{ needs.prepare.outputs.version }}"
-              fi
-              echo ""
-            fi
-          done
-          echo "========================================="
-
-      - name: Combine all parts into a single manifest
-        run: |
-          version="${{ needs.prepare.outputs.version }}"
-          mkdir -p "output/$version"
-          pushd files
-
-          # Check if we have version directories directly (new structure)
-          if [ -d "$version" ]; then
-            echo "Found version directory directly: $version"
-            cp "$version"/* "../output/$version/"
-          else
-            # Fallback to old structure (device/version)
-            for device in *; do
-              pushd $device
-              if [ -d "$version" ]; then
-                pushd $version
-                cp * "../../../output/$version/"
-                popd
-              elif [ -d "output/$version" ]; then
-                pushd "output/$version"
-                cp * "../../../output/$version/"
-                popd
-              fi
-              popd
-            done
+          set -e
+          VERSION='${{ needs.prepare.outputs.version }}'
+          mkdir -p combined/$VERSION
+          mapfile -t manifests < <(find devices -type f -path "*/$VERSION/manifest.json")
+          if [ ${#manifests[@]} -eq 0 ]; then
+            echo "No manifest.json files found" >&2
+            exit 1
           fi
-
-          popd
-
-          # Handle manifest.json combining
-          if [ -f "files/$version/manifest.json" ]; then
-            # Direct version structure
-            cp "files/$version/manifest.json" "output/$version/manifest.json"
-          else
-            # Old structure - combine manifests
-            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
-              files/*/$version/manifest.json files/*/output/$version/manifest.json > output/$version/manifest.json 2>/dev/null || \
-            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
-              files/*/$version/manifest.json > output/$version/manifest.json 2>/dev/null || \
-            jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' \
-              files/*/output/$version/manifest.json > output/$version/manifest.json
-          fi
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4.6.2
+          jq -s '(.[0] | del(.builds)) + {"builds": (reduce .[].builds as $b ([]; . + $b))}' "${manifests[@]}" > combined/$VERSION/manifest.json
+          find devices -type f -path "*/$VERSION/*" \( -name "*.bin" -o -name "*.elf" \) -exec cp -n {} combined/$VERSION/ \;
+      - name: Debug – Combined manifest validation
+        if: inputs.debug == true
+        run: |
+          VERSION='${{ needs.prepare.outputs.version }}'
+          echo "::group::Combined manifest (first 160 lines)"
+          sed -n '1,160p' combined/$VERSION/manifest.json
+          echo "::endgroup::"
+          echo "::group::Build counts"
+          jq '.builds | length as $c | "Total builds: \($c)"' combined/$VERSION/manifest.json
+          echo "::endgroup::"
+          echo "::group::Duplicate build name check"
+          jq -r '.builds[].name' combined/$VERSION/manifest.json | sort | uniq -d | sed 's/^/DUPLICATE: /' || true
+          echo "::endgroup::"
+          echo "::group::Combined directory listing"
+          find combined/$VERSION -maxdepth 1 -type f -printf '%f (%s bytes)\\n'
+          echo "::endgroup::"
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.combined-name }}
-          path: output
+          path: combined
+      - name: Delete device artifacts
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const prefix = '${{ needs.prepare.outputs.artifact-prefix }}-';
+            const {owner, repo} = context.repo;
+            const artifacts = await github.paginate(
+              github.rest.actions.listArtifactsForRepo,
+              { owner, repo, per_page: 100 }
+            );
+            for (const art of artifacts) {
+              if (!art.expired && art.name.startsWith(prefix)) {
+                core.info(`Deleting ${art.name}`);
+                await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: art.id });
+              }
+            }
+      - name: Failure dump (combine)
+        if: failure() && inputs.debug == true
+        run: |
+            echo "::group::Failure dump (combine job)"
+            find . -maxdepth 5 -type f -printf '%P (%s bytes)\\n' | head -800
+            echo "::endgroup::"
