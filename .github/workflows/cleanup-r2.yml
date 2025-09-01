@@ -16,7 +16,7 @@ on:
 jobs:
   cleanup:
     name: Cleanup old files
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Install dependencies
         run: |
