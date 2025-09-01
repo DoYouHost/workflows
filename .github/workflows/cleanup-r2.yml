@@ -1,0 +1,150 @@
+name: Cleanup old files from Cloudflare R2
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: Directory to clean up
+        required: true
+        type: string
+      days_old:
+        description: Delete files older than this many days
+        required: false
+        type: string
+        default: '30'
+
+jobs:
+  cleanup:
+    name: Cleanup old files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Configure AWS CLI for R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL_S3: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set region $AWS_DEFAULT_REGION
+          aws configure set endpoint_url $AWS_ENDPOINT_URL_S3
+
+      - name: List and delete old files
+        env:
+          DIRECTORY: ${{ inputs.directory }}
+          DAYS_OLD: ${{ inputs.days_old || '30' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL_S3: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET_NAME: ${{ secrets.CF_BUCKET_NAME }}
+        run: |
+          # Calculate cutoff date
+          CUTOFF_DATE=$(date -d "$DAYS_OLD days ago" +%Y-%m-%d)
+
+          echo "🧹 Starting cleanup process"
+          echo "📁 Directory: $DIRECTORY"
+          echo "⏰ Days old threshold: $DAYS_OLD"
+          echo "📅 Cutoff date: $CUTOFF_DATE"
+          echo "🔗 Called by: ${{ github.event.workflow_run.name || github.workflow_ref }}"
+
+          # Create temp directory for manifests
+          mkdir -p /tmp/manifests
+
+          # Download manifest files (suppress output to avoid exposing bucket name)
+          if aws s3 cp s3://$BUCKET_NAME/$DIRECTORY/manifest.json /tmp/manifests/manifest.json --quiet 2>/dev/null; then
+            echo "📋 Found manifest.json"
+          else
+            echo "ℹ️ manifest.json not found"
+          fi
+
+          if aws s3 cp s3://$BUCKET_NAME/$DIRECTORY/manifest-beta.json /tmp/manifests/manifest-beta.json --quiet 2>/dev/null; then
+            echo "📋 Found manifest-beta.json"
+          else
+            echo "ℹ️ manifest-beta.json not found"
+          fi
+
+          # Extract file paths from manifests
+          PROTECTED_FILES=""
+
+          # Always protect manifest files
+          PROTECTED_FILES="manifest.json manifest-beta.json"
+
+          for manifest in /tmp/manifests/manifest.json /tmp/manifests/manifest-beta.json; do
+            if [ -f "$manifest" ]; then
+              echo "📋 Processing $manifest"
+
+              # Extract OTA paths
+              OTA_PATHS=$(jq -r '.builds[].ota.path' "$manifest" 2>/dev/null || echo "")
+              if [ -n "$OTA_PATHS" ]; then
+                PROTECTED_FILES="$PROTECTED_FILES $OTA_PATHS"
+              fi
+
+              # Extract parts paths
+              PARTS_PATHS=$(jq -r '.builds[].parts[].path' "$manifest" 2>/dev/null || echo "")
+              if [ -n "$PARTS_PATHS" ]; then
+                PROTECTED_FILES="$PROTECTED_FILES $PARTS_PATHS"
+              fi
+            fi
+          done
+
+          # Remove duplicates and create protected file list
+          PROTECTED_FILES=$(echo "$PROTECTED_FILES" | tr ' ' '\n' | sort | uniq)
+          echo "🛡️ Protected files (will not be deleted):"
+          echo "$PROTECTED_FILES"
+
+          # List all objects in the directory (with error handling)
+          if ! ALL_OBJECTS=$(aws s3api list-objects-v2 --bucket "$BUCKET_NAME" --prefix "$DIRECTORY/" --query 'Contents[].Key' --output text 2>/dev/null); then
+            echo "❌ Failed to list objects in directory: $DIRECTORY"
+            exit 1
+          fi
+
+          # Filter objects by age and exclude protected files
+          OBJECTS_TO_DELETE=""
+
+          for obj in $ALL_OBJECTS; do
+            # Get the relative path within the directory
+            REL_PATH="${obj#${DIRECTORY}/}"
+
+            # Skip manifest files in root directory
+            if [[ "$REL_PATH" == "manifest.json" || "$REL_PATH" == "manifest-beta.json" ]]; then
+              echo "🛡️ Skipping protected manifest file: $obj"
+              continue
+            fi
+
+            # Skip if file is in protected list
+            if echo "$PROTECTED_FILES" | grep -q "^${REL_PATH}$"; then
+              echo "🛡️ Skipping protected file: $obj"
+              continue
+            fi
+
+            # Check if file is older than cutoff date (with error handling)
+            if ! OBJ_DATE=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1); then
+              echo "⚠️ Could not get date for: ${obj#${DIRECTORY}/}"
+              continue
+            fi
+
+            if [[ "$OBJ_DATE" < "$CUTOFF_DATE" ]]; then
+              OBJECTS_TO_DELETE="$OBJECTS_TO_DELETE $obj"
+            fi
+          done
+
+          if [ -n "$OBJECTS_TO_DELETE" ]; then
+            echo "🗑️ Found $(echo "$OBJECTS_TO_DELETE" | wc -w) old files to delete"
+
+            # Delete the objects with error handling
+            if echo "$OBJECTS_TO_DELETE" | xargs -I {} aws s3 rm s3://$BUCKET_NAME/{} --quiet 2>/dev/null; then
+              echo "✅ Cleanup completed successfully"
+            else
+              echo "❌ Some files may not have been deleted successfully"
+              exit 1
+            fi
+          else
+            echo "ℹ️ No old files found to delete"
+          fi
