@@ -30,7 +30,27 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y jq
+          sudo apt-get install -y jq unzip curl
+
+      - name: Check and install AWS CLI
+        run: |
+          # Check if AWS CLI is already installed
+          if command -v aws &> /dev/null; then
+            echo "✅ AWS CLI is already installed"
+            aws --version
+          else
+            echo "📦 AWS CLI not found, installing..."
+            
+            # Download and install AWS CLI v2
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install --update
+            rm -rf aws awscliv2.zip
+            
+            # Verify installation
+            echo "✅ AWS CLI installed successfully"
+            aws --version
+          fi
 
       - name: Configure AWS CLI for R2
         env:
