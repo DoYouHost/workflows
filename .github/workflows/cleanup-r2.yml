@@ -99,8 +99,9 @@ jobs:
             echo "ℹ️ manifest-beta.json not found"
           fi
 
-          # Extract file paths from manifests
+          # Extract file paths and versions from manifests
           PROTECTED_FILES=""
+          PROTECTED_VERSIONS=""
 
           # Always protect manifest files
           PROTECTED_FILES="manifest.json manifest-beta.json"
@@ -108,6 +109,12 @@ jobs:
           for manifest in /tmp/manifests/manifest.json /tmp/manifests/manifest-beta.json; do
             if [ -f "$manifest" ]; then
               echo "📋 Processing $manifest"
+
+              # Extract version from manifest
+              MANIFEST_VERSION=$(jq -r '.version' "$manifest" 2>/dev/null || echo "")
+              if [ -n "$MANIFEST_VERSION" ]; then
+                PROTECTED_VERSIONS="$PROTECTED_VERSIONS $MANIFEST_VERSION"
+              fi
 
               # Extract OTA paths
               OTA_PATHS=$(jq -r '.builds[].ota.path' "$manifest" 2>/dev/null || echo "")
@@ -123,10 +130,14 @@ jobs:
             fi
           done
 
-          # Remove duplicates and create protected file list
+          # Remove duplicates
           PROTECTED_FILES=$(echo "$PROTECTED_FILES" | tr ' ' '\n' | sort | uniq)
+          PROTECTED_VERSIONS=$(echo "$PROTECTED_VERSIONS" | tr ' ' '\n' | sort | uniq)
+
           echo "🛡️ Protected files (will not be deleted):"
           echo "$PROTECTED_FILES"
+          echo "📁 Protected versions (directories will be skipped):"
+          echo "$PROTECTED_VERSIONS"
 
           # List all objects in the directory (with error handling)
           if ! ALL_OBJECTS=$(aws s3api list-objects-v2 --bucket "$BUCKET_NAME" --prefix "$DIRECTORY/" --query 'Contents[].Key' --output text 2>/dev/null); then
@@ -151,6 +162,18 @@ jobs:
             if echo "$PROTECTED_FILES" | grep -q "^${REL_PATH}$"; then
               echo "🛡️ Skipping protected file: $obj"
               continue
+            fi
+
+            # Check if this object is inside a protected version directory
+            OBJECT_DIR=$(dirname "$REL_PATH")
+            if [ "$OBJECT_DIR" != "." ]; then
+              # Check if the directory name matches any protected version
+              for version in $PROTECTED_VERSIONS; do
+                if [[ "$OBJECT_DIR" == "$version" || "$OBJECT_DIR" == "$version/" ]]; then
+                  echo "🛡️ Skipping file in protected version directory: $obj (version: $version)"
+                  continue 2
+                fi
+              done
             fi
 
             # Check if file is older than cutoff date (with error handling)
