@@ -12,6 +12,15 @@ on:
         required: false
         type: string
         default: '30'
+    secrets:
+      CF_ACCOUNT_ID:
+        required: true
+      CF_ACCESS_KEY_ID:
+        required: true
+      CF_SECRET_ACCESS_KEY:
+        required: true
+      CF_BUCKET_NAME:
+        required: true
 
 jobs:
   cleanup:
