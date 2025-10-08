@@ -32,25 +32,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq unzip curl
 
-      - name: Check and install AWS CLI
+      - name: Setup AWS CLI
         run: |
-          # Check if AWS CLI is already installed
-          if command -v aws &> /dev/null; then
-            echo "✅ AWS CLI is already installed"
-            aws --version
-          else
-            echo "📦 AWS CLI not found, installing..."
-            
-            # Download and install AWS CLI v2
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip awscliv2.zip
+          if ! command -v aws &> /dev/null; then
+            echo "📦 Installing AWS CLI..."
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
             sudo ./aws/install --update
             rm -rf aws awscliv2.zip
-            
-            # Verify installation
-            echo "✅ AWS CLI installed successfully"
-            aws --version
           fi
+          echo "✅ AWS CLI ready: $(aws --version)"
 
       - name: Configure AWS CLI for R2
         env:
@@ -74,9 +65,8 @@ jobs:
           AWS_ENDPOINT_URL_S3: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
           BUCKET_NAME: ${{ secrets.CF_BUCKET_NAME }}
         run: |
-          set +e  # Disable exit on error to handle failures gracefully
+          set +e
           
-          # Calculate cutoff date
           CUTOFF_DATE=$(date -d "$DAYS_OLD days ago" +%Y-%m-%d)
 
           echo "🧹 Starting cleanup process"
@@ -85,170 +75,87 @@ jobs:
           echo "📅 Cutoff date: $CUTOFF_DATE"
           echo "🔗 Called by: ${{ github.event.workflow_run.name || github.workflow_ref }}"
 
-          # Create temp directory for manifests
-          mkdir -p /tmp/manifests
-
-          # Download manifest files (suppress output to avoid exposing bucket name)
-          if aws s3 cp s3://$BUCKET_NAME/$DIRECTORY/manifest.json /tmp/manifests/manifest.json --quiet 2>/dev/null; then
-            echo "📋 Found manifest.json"
-          else
-            echo "ℹ️ manifest.json not found"
-          fi
-
-          if aws s3 cp s3://$BUCKET_NAME/$DIRECTORY/manifest-beta.json /tmp/manifests/manifest-beta.json --quiet 2>/dev/null; then
-            echo "📋 Found manifest-beta.json"
-          else
-            echo "ℹ️ manifest-beta.json not found"
-          fi
-
-          # Extract file paths and versions from manifests
-          PROTECTED_FILES=""
+          PROTECTED_FILES="manifest.json manifest-beta.json"
           PROTECTED_VERSIONS=""
 
-          # Always protect manifest files
-          PROTECTED_FILES="manifest.json manifest-beta.json"
-
-          for manifest in /tmp/manifests/manifest.json /tmp/manifests/manifest-beta.json; do
-            if [ -f "$manifest" ]; then
-              echo "📋 Processing $manifest"
-
-              # Extract version from manifest
-              MANIFEST_VERSION=$(jq -r '.version' "$manifest" 2>/dev/null || echo "")
-              if [ -n "$MANIFEST_VERSION" ]; then
-                PROTECTED_VERSIONS="$PROTECTED_VERSIONS $MANIFEST_VERSION"
-              fi
-
-              # Extract OTA paths
-              OTA_PATHS=$(jq -r '.builds[].ota.path' "$manifest" 2>/dev/null || echo "")
-              if [ -n "$OTA_PATHS" ]; then
-                PROTECTED_FILES="$PROTECTED_FILES $OTA_PATHS"
-              fi
-
-              # Extract parts paths
-              PARTS_PATHS=$(jq -r '.builds[].parts[].path' "$manifest" 2>/dev/null || echo "")
-              if [ -n "$PARTS_PATHS" ]; then
-                PROTECTED_FILES="$PROTECTED_FILES $PARTS_PATHS"
-              fi
+          for manifest_name in manifest.json manifest-beta.json; do
+            if aws s3 cp "s3://$BUCKET_NAME/$DIRECTORY/$manifest_name" "/tmp/$manifest_name" --quiet 2>/dev/null; then
+              echo "📋 Processing $manifest_name"
+              
+              version=$(jq -r '.version // empty' "/tmp/$manifest_name" 2>/dev/null)
+              [ -n "$version" ] && PROTECTED_VERSIONS="$PROTECTED_VERSIONS $version"
+              
+              paths=$(jq -r '.builds[]?.ota?.path // empty, .builds[]?.parts[]?.path // empty' "/tmp/$manifest_name" 2>/dev/null)
+              [ -n "$paths" ] && PROTECTED_FILES="$PROTECTED_FILES $paths"
             fi
           done
 
-          # Remove duplicates
-          PROTECTED_FILES=$(echo "$PROTECTED_FILES" | tr ' ' '\n' | sort | uniq | tr '\n' ' ')
-          PROTECTED_VERSIONS=$(echo "$PROTECTED_VERSIONS" | tr ' ' '\n' | sort | uniq | tr '\n' ' ')
+          PROTECTED_FILES=$(echo $PROTECTED_FILES | tr ' ' '\n' | sort -u | tr '\n' ' ')
+          PROTECTED_VERSIONS=$(echo $PROTECTED_VERSIONS | tr ' ' '\n' | sort -u | tr '\n' ' ')
 
           echo "🛡️ Protected files (will not be deleted):"
           echo "$PROTECTED_FILES"
           echo "📁 Protected versions (directories will be skipped):"
           echo "$PROTECTED_VERSIONS"
 
-          # List all objects in the directory (with error handling)
           ALL_OBJECTS=$(aws s3api list-objects-v2 --bucket "$BUCKET_NAME" --prefix "$DIRECTORY/" --query 'Contents[].Key' --output text 2>/dev/null)
           if [ $? -ne 0 ]; then
             echo "❌ Failed to list objects in directory: $DIRECTORY"
             exit 1
           fi
 
-          # Filter objects by age and exclude protected files
           OBJECTS_TO_DELETE=""
 
+          is_protected() {
+            local file="$1"
+            echo "$PROTECTED_FILES" | grep -q "\\b${file}\\b" && return 0
+            for version in $PROTECTED_VERSIONS; do
+              [[ "$file" == "$version"* ]] && return 0
+            done
+            return 1
+          }
+
           for obj in $ALL_OBJECTS; do
-            # Get the relative path within the directory
-            REL_PATH="${obj#${DIRECTORY}/}"
-
-            # Skip manifest files in root directory
-            if [[ "$REL_PATH" == "manifest.json" || "$REL_PATH" == "manifest-beta.json" ]]; then
-              echo "🛡️ Skipping protected manifest file: $obj"
+            rel_path="${obj#${DIRECTORY}/}"
+            
+            if is_protected "$rel_path"; then
+              echo "🛡️ Skipping protected: $rel_path"
               continue
             fi
 
-            # Skip if file is in protected list
-            if echo "$PROTECTED_FILES" | grep -q "^${REL_PATH}$"; then
-              echo "🛡️ Skipping protected file: $obj"
+            obj_date=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1)
+            if [ -z "$obj_date" ] || [[ "$obj_date" >= "$CUTOFF_DATE" ]]; then
               continue
             fi
 
-            # Check if this object is inside a protected version directory
-            OBJECT_DIR=$(dirname "$REL_PATH")
-            if [ "$OBJECT_DIR" != "." ]; then
-              # Check if the directory name matches any protected version
-              SKIP_FILE=false
-              for version in $PROTECTED_VERSIONS; do
-                if [[ "$OBJECT_DIR" == "$version" || "$OBJECT_DIR" == "$version/" ]]; then
-                  echo "🛡️ Skipping file in protected version directory: $obj (version: $version)"
-                  SKIP_FILE=true
-                  break
-                fi
-              done
-              if [ "$SKIP_FILE" = true ]; then
-                continue
-              fi
-            fi
+            OBJECTS_TO_DELETE="$OBJECTS_TO_DELETE $obj"
+          done
 
-            # Check if file is older than cutoff date (with error handling)
-            OBJ_DATE=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1)
-            if [ $? -ne 0 ] || [ -z "$OBJ_DATE" ]; then
-              echo "⚠️ Could not get date for: ${obj#${DIRECTORY}/}"
-              continue
-            fi
+          if [ -z "$OBJECTS_TO_DELETE" ]; then
+            echo "ℹ️ No old files found to delete"
+            exit 0
+          fi
 
-            if [[ "$OBJ_DATE" < "$CUTOFF_DATE" ]]; then
-              OBJECTS_TO_DELETE="$OBJECTS_TO_DELETE $obj"
+          object_count=$(echo "$OBJECTS_TO_DELETE" | wc -w)
+          echo "🗑️ Found $object_count old files to delete"
+
+          deleted=0
+          failed=0
+
+          for obj in $OBJECTS_TO_DELETE; do
+            [ -z "$obj" ] && continue
+            echo "🗑️ Deleting: ${obj#${DIRECTORY}/}"
+            if aws s3 rm "s3://$BUCKET_NAME/$obj" --quiet; then
+              ((deleted++))
+            else
+              ((failed++))
+              echo "  ❌ Failed"
             fi
           done
 
-          if [ -n "$OBJECTS_TO_DELETE" ]; then
-            OBJECT_COUNT=$(echo "$OBJECTS_TO_DELETE" | wc -w)
-            echo "🗑️ Found $OBJECT_COUNT old files to delete"
-
-            # Initialize counters
-            DELETED_COUNT=0
-            FAILED_COUNT=0
-
-            echo "🔄 Starting deletion process..."
-
-            # Delete objects one by one with better error handling
-            for obj in $OBJECTS_TO_DELETE; do
-              if [ -n "$obj" ]; then
-                echo "🗑️ Deleting: ${obj#${DIRECTORY}/}"
-                if aws s3 rm "s3://$BUCKET_NAME/$obj" --quiet; then
-                  ((DELETED_COUNT++))
-                  echo "  ✅ Successfully deleted"
-                else
-                  echo "  ❌ Failed to delete: ${obj#${DIRECTORY}/}"
-                  ((FAILED_COUNT++))
-                fi
-                
-                # Add small delay to avoid overwhelming the API
-                sleep 0.1
-              fi
-            done
-
-            echo ""
-            echo "📊 Deletion summary:"
-            echo "  ✅ Successfully deleted: $DELETED_COUNT files"
-            echo "  ❌ Failed to delete: $FAILED_COUNT files"
-            echo "  📋 Total processed: $((DELETED_COUNT + FAILED_COUNT)) files"
-
-            if [ $FAILED_COUNT -gt 0 ]; then
-              echo ""
-              echo "⚠️ Some files could not be deleted. This might be due to:"
-              echo "  - Permission issues"
-              echo "  - Network connectivity problems"
-              echo "  - Files being modified during deletion"
-              echo "  - API rate limiting"
-              echo ""
-              echo "🔄 Cleanup completed with $FAILED_COUNT failures out of $OBJECT_COUNT files"
-            else
-              echo ""
-              echo "✅ Cleanup completed successfully - all $DELETED_COUNT files deleted"
-            fi
-            
-            # Exit with success even if some files failed to delete
-            # Only exit with error if no files were deleted at all
-            if [ $DELETED_COUNT -eq 0 ] && [ $FAILED_COUNT -gt 0 ]; then
-              echo "❌ No files were successfully deleted"
-              exit 1
-            fi
-          else
-            echo "ℹ️ No old files found to delete"
+          echo "📊 Summary: $deleted deleted, $failed failed"
+          
+          if [ $deleted -eq 0 ] && [ $failed -gt 0 ]; then
+            echo "❌ No files were successfully deleted"
+            exit 1
           fi
