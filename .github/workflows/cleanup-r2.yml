@@ -190,12 +190,49 @@ jobs:
           if [ -n "$OBJECTS_TO_DELETE" ]; then
             echo "🗑️ Found $(echo "$OBJECTS_TO_DELETE" | wc -w) old files to delete"
 
-            # Delete the objects with error handling
-            if echo "$OBJECTS_TO_DELETE" | xargs -I {} aws s3 rm s3://$BUCKET_NAME/{} --quiet 2>/dev/null; then
-              echo "✅ Cleanup completed successfully"
+            # Create a temporary file with objects to delete
+            TEMP_DELETE_LIST="/tmp/objects_to_delete.txt"
+            echo "$OBJECTS_TO_DELETE" | tr ' ' '\n' > "$TEMP_DELETE_LIST"
+
+            # Delete objects one by one with better error handling
+            DELETED_COUNT=0
+            FAILED_COUNT=0
+            TOTAL_COUNT=$(wc -l < "$TEMP_DELETE_LIST")
+
+            echo "🔄 Starting deletion of $TOTAL_COUNT files..."
+
+            while IFS= read -r obj; do
+              if [ -n "$obj" ]; then
+                echo "🗑️ Deleting: ${obj#${DIRECTORY}/}"
+                if aws s3 rm "s3://$BUCKET_NAME/$obj" --quiet; then
+                  ((DELETED_COUNT++))
+                else
+                  echo "❌ Failed to delete: ${obj#${DIRECTORY}/}"
+                  ((FAILED_COUNT++))
+                fi
+                
+                # Add small delay to avoid overwhelming the API
+                sleep 0.1
+              fi
+            done < "$TEMP_DELETE_LIST"
+
+            # Clean up temporary file
+            rm -f "$TEMP_DELETE_LIST"
+
+            echo "📊 Deletion summary:"
+            echo "  ✅ Successfully deleted: $DELETED_COUNT files"
+            echo "  ❌ Failed to delete: $FAILED_COUNT files"
+            echo "  📋 Total processed: $TOTAL_COUNT files"
+
+            if [ $FAILED_COUNT -gt 0 ]; then
+              echo "⚠️ Some files could not be deleted. This might be due to:"
+              echo "  - Permission issues"
+              echo "  - Network connectivity problems"
+              echo "  - Files being modified during deletion"
+              # Don't exit with error for partial failures - log and continue
+              echo "🔄 Cleanup completed with $FAILED_COUNT failures"
             else
-              echo "❌ Some files may not have been deleted successfully"
-              exit 1
+              echo "✅ Cleanup completed successfully - all files deleted"
             fi
           else
             echo "ℹ️ No old files found to delete"
