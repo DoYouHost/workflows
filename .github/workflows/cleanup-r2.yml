@@ -74,6 +74,8 @@ jobs:
           AWS_ENDPOINT_URL_S3: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
           BUCKET_NAME: ${{ secrets.CF_BUCKET_NAME }}
         run: |
+          set +e  # Disable exit on error to handle failures gracefully
+          
           # Calculate cutoff date
           CUTOFF_DATE=$(date -d "$DAYS_OLD days ago" +%Y-%m-%d)
 
@@ -131,8 +133,8 @@ jobs:
           done
 
           # Remove duplicates
-          PROTECTED_FILES=$(echo "$PROTECTED_FILES" | tr ' ' '\n' | sort | uniq)
-          PROTECTED_VERSIONS=$(echo "$PROTECTED_VERSIONS" | tr ' ' '\n' | sort | uniq)
+          PROTECTED_FILES=$(echo "$PROTECTED_FILES" | tr ' ' '\n' | sort | uniq | tr '\n' ' ')
+          PROTECTED_VERSIONS=$(echo "$PROTECTED_VERSIONS" | tr ' ' '\n' | sort | uniq | tr '\n' ' ')
 
           echo "🛡️ Protected files (will not be deleted):"
           echo "$PROTECTED_FILES"
@@ -140,7 +142,8 @@ jobs:
           echo "$PROTECTED_VERSIONS"
 
           # List all objects in the directory (with error handling)
-          if ! ALL_OBJECTS=$(aws s3api list-objects-v2 --bucket "$BUCKET_NAME" --prefix "$DIRECTORY/" --query 'Contents[].Key' --output text 2>/dev/null); then
+          ALL_OBJECTS=$(aws s3api list-objects-v2 --bucket "$BUCKET_NAME" --prefix "$DIRECTORY/" --query 'Contents[].Key' --output text 2>/dev/null)
+          if [ $? -ne 0 ]; then
             echo "❌ Failed to list objects in directory: $DIRECTORY"
             exit 1
           fi
@@ -168,16 +171,22 @@ jobs:
             OBJECT_DIR=$(dirname "$REL_PATH")
             if [ "$OBJECT_DIR" != "." ]; then
               # Check if the directory name matches any protected version
+              SKIP_FILE=false
               for version in $PROTECTED_VERSIONS; do
                 if [[ "$OBJECT_DIR" == "$version" || "$OBJECT_DIR" == "$version/" ]]; then
                   echo "🛡️ Skipping file in protected version directory: $obj (version: $version)"
-                  continue 2
+                  SKIP_FILE=true
+                  break
                 fi
               done
+              if [ "$SKIP_FILE" = true ]; then
+                continue
+              fi
             fi
 
             # Check if file is older than cutoff date (with error handling)
-            if ! OBJ_DATE=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1); then
+            OBJ_DATE=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1)
+            if [ $? -ne 0 ] || [ -z "$OBJ_DATE" ]; then
               echo "⚠️ Could not get date for: ${obj#${DIRECTORY}/}"
               continue
             fi
@@ -188,51 +197,57 @@ jobs:
           done
 
           if [ -n "$OBJECTS_TO_DELETE" ]; then
-            echo "🗑️ Found $(echo "$OBJECTS_TO_DELETE" | wc -w) old files to delete"
+            OBJECT_COUNT=$(echo "$OBJECTS_TO_DELETE" | wc -w)
+            echo "🗑️ Found $OBJECT_COUNT old files to delete"
 
-            # Create a temporary file with objects to delete
-            TEMP_DELETE_LIST="/tmp/objects_to_delete.txt"
-            echo "$OBJECTS_TO_DELETE" | tr ' ' '\n' > "$TEMP_DELETE_LIST"
-
-            # Delete objects one by one with better error handling
+            # Initialize counters
             DELETED_COUNT=0
             FAILED_COUNT=0
-            TOTAL_COUNT=$(wc -l < "$TEMP_DELETE_LIST")
 
-            echo "🔄 Starting deletion of $TOTAL_COUNT files..."
+            echo "🔄 Starting deletion process..."
 
-            while IFS= read -r obj; do
+            # Delete objects one by one with better error handling
+            for obj in $OBJECTS_TO_DELETE; do
               if [ -n "$obj" ]; then
                 echo "🗑️ Deleting: ${obj#${DIRECTORY}/}"
                 if aws s3 rm "s3://$BUCKET_NAME/$obj" --quiet; then
                   ((DELETED_COUNT++))
+                  echo "  ✅ Successfully deleted"
                 else
-                  echo "❌ Failed to delete: ${obj#${DIRECTORY}/}"
+                  echo "  ❌ Failed to delete: ${obj#${DIRECTORY}/}"
                   ((FAILED_COUNT++))
                 fi
                 
                 # Add small delay to avoid overwhelming the API
                 sleep 0.1
               fi
-            done < "$TEMP_DELETE_LIST"
+            done
 
-            # Clean up temporary file
-            rm -f "$TEMP_DELETE_LIST"
-
+            echo ""
             echo "📊 Deletion summary:"
             echo "  ✅ Successfully deleted: $DELETED_COUNT files"
             echo "  ❌ Failed to delete: $FAILED_COUNT files"
-            echo "  📋 Total processed: $TOTAL_COUNT files"
+            echo "  📋 Total processed: $((DELETED_COUNT + FAILED_COUNT)) files"
 
             if [ $FAILED_COUNT -gt 0 ]; then
+              echo ""
               echo "⚠️ Some files could not be deleted. This might be due to:"
               echo "  - Permission issues"
               echo "  - Network connectivity problems"
               echo "  - Files being modified during deletion"
-              # Don't exit with error for partial failures - log and continue
-              echo "🔄 Cleanup completed with $FAILED_COUNT failures"
+              echo "  - API rate limiting"
+              echo ""
+              echo "🔄 Cleanup completed with $FAILED_COUNT failures out of $OBJECT_COUNT files"
             else
-              echo "✅ Cleanup completed successfully - all files deleted"
+              echo ""
+              echo "✅ Cleanup completed successfully - all $DELETED_COUNT files deleted"
+            fi
+            
+            # Exit with success even if some files failed to delete
+            # Only exit with error if no files were deleted at all
+            if [ $DELETED_COUNT -eq 0 ] && [ $FAILED_COUNT -gt 0 ]; then
+              echo "❌ No files were successfully deleted"
+              exit 1
             fi
           else
             echo "ℹ️ No old files found to delete"
