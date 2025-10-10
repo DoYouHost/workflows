@@ -1,0 +1,161 @@
+name: Cleanup old files from Cloudflare R2
+
+on:
+  workflow_call:
+    inputs:
+      directory:
+        description: Directory to clean up
+        required: true
+        type: string
+      days_old:
+        description: Delete files older than this many days
+        required: false
+        type: string
+        default: '30'
+    secrets:
+      CF_ACCOUNT_ID:
+        required: true
+      CF_ACCESS_KEY_ID:
+        required: true
+      CF_SECRET_ACCESS_KEY:
+        required: true
+      CF_BUCKET_NAME:
+        required: true
+
+jobs:
+  cleanup:
+    name: Cleanup old files
+    runs-on: self-hosted
+    steps:
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq unzip curl
+
+      - name: Setup AWS CLI
+        run: |
+          if ! command -v aws &> /dev/null; then
+            echo "📦 Installing AWS CLI..."
+            curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip -q awscliv2.zip
+            sudo ./aws/install --update
+            rm -rf aws awscliv2.zip
+          fi
+          echo "✅ AWS CLI ready: $(aws --version)"
+
+      - name: Configure AWS CLI for R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL_S3: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set region $AWS_DEFAULT_REGION
+          aws configure set endpoint_url $AWS_ENDPOINT_URL_S3
+
+      - name: List and delete old files
+        env:
+          DIRECTORY: ${{ inputs.directory }}
+          DAYS_OLD: ${{ inputs.days_old || '30' }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.CF_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CF_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_ENDPOINT_URL_S3: https://${{ secrets.CF_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET_NAME: ${{ secrets.CF_BUCKET_NAME }}
+        run: |
+          set +e
+          
+          CUTOFF_DATE=$(date -d "$DAYS_OLD days ago" +%Y-%m-%d)
+
+          echo "🧹 Starting cleanup process"
+          echo "📁 Directory: $DIRECTORY"
+          echo "⏰ Days old threshold: $DAYS_OLD"
+          echo "📅 Cutoff date: $CUTOFF_DATE"
+          echo "🔗 Called by: ${{ github.event.workflow_run.name || github.workflow_ref }}"
+
+          PROTECTED_FILES="manifest.json manifest-beta.json"
+          PROTECTED_VERSIONS=""
+
+          for manifest_name in manifest.json manifest-beta.json; do
+            if aws s3 cp "s3://$BUCKET_NAME/$DIRECTORY/$manifest_name" "/tmp/$manifest_name" --quiet 2>/dev/null; then
+              echo "📋 Processing $manifest_name"
+              
+              version=$(jq -r '.version // empty' "/tmp/$manifest_name" 2>/dev/null)
+              [ -n "$version" ] && PROTECTED_VERSIONS="$PROTECTED_VERSIONS $version"
+              
+              paths=$(jq -r '.builds[]?.ota?.path // empty, .builds[]?.parts[]?.path // empty' "/tmp/$manifest_name" 2>/dev/null)
+              [ -n "$paths" ] && PROTECTED_FILES="$PROTECTED_FILES $paths"
+            fi
+          done
+
+          PROTECTED_FILES=$(echo $PROTECTED_FILES | tr ' ' '\n' | sort -u | tr '\n' ' ')
+          PROTECTED_VERSIONS=$(echo $PROTECTED_VERSIONS | tr ' ' '\n' | sort -u | tr '\n' ' ')
+
+          echo "🛡️ Protected files (will not be deleted):"
+          echo "$PROTECTED_FILES"
+          echo "📁 Protected versions (directories will be skipped):"
+          echo "$PROTECTED_VERSIONS"
+
+          ALL_OBJECTS=$(aws s3api list-objects-v2 --bucket "$BUCKET_NAME" --prefix "$DIRECTORY/" --query 'Contents[].Key' --output text 2>/dev/null)
+          if [ $? -ne 0 ]; then
+            echo "❌ Failed to list objects in directory: $DIRECTORY"
+            exit 1
+          fi
+
+          OBJECTS_TO_DELETE=""
+
+          is_protected() {
+            local file="$1"
+            echo "$PROTECTED_FILES" | grep -q "\\b${file}\\b" && return 0
+            for version in $PROTECTED_VERSIONS; do
+              [[ "$file" == "$version"* ]] && return 0
+            done
+            return 1
+          }
+
+          for obj in $ALL_OBJECTS; do
+            rel_path="${obj#${DIRECTORY}/}"
+            
+            if is_protected "$rel_path"; then
+              echo "🛡️ Skipping protected: $rel_path"
+              continue
+            fi
+
+            obj_date=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1)
+            if [ -z "$obj_date" ] || [[ "$obj_date" >= "$CUTOFF_DATE" ]]; then
+              continue
+            fi
+
+            OBJECTS_TO_DELETE="$OBJECTS_TO_DELETE $obj"
+          done
+
+          if [ -z "$OBJECTS_TO_DELETE" ]; then
+            echo "ℹ️ No old files found to delete"
+            exit 0
+          fi
+
+          object_count=$(echo "$OBJECTS_TO_DELETE" | wc -w)
+          echo "🗑️ Found $object_count old files to delete"
+
+          deleted=0
+          failed=0
+
+          for obj in $OBJECTS_TO_DELETE; do
+            [ -z "$obj" ] && continue
+            echo "🗑️ Deleting: ${obj#${DIRECTORY}/}"
+            if aws s3 rm "s3://$BUCKET_NAME/$obj" --quiet; then
+              ((deleted++))
+            else
+              ((failed++))
+              echo "  ❌ Failed"
+            fi
+          done
+
+          echo "📊 Summary: $deleted deleted, $failed failed"
+          
+          if [ $deleted -eq 0 ] && [ $failed -gt 0 ]; then
+            echo "❌ No files were successfully deleted"
+            exit 1
+          fi

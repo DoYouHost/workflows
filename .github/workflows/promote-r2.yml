@@ -28,41 +28,32 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.channel }}
     steps:
-      # Try downloading artifacts first (for workflows that have them)
       - name: Download artifacts (if available)
         uses: actions/download-artifact@v5.0.0
         continue-on-error: true
         with:
           path: files
 
-      # If no artifacts, download from R2
       - name: Download from R2 if no artifacts
         run: |
           VERSION="${{ inputs.version }}"
           DIRECTORY="${{ inputs.directory }}"
           
-          # Check if we have artifacts
           if [ ! -d "files" ] || [ -z "$(ls -A files)" ]; then
             echo "No artifacts found, downloading from R2..."
             
-            # Check if AWS CLI is available
-            if command -v aws &> /dev/null; then
-              echo "✅ AWS CLI already available"
-              aws --version
-            else
-              echo "AWS CLI not found, installing..."
-              curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-              unzip awscliv2.zip
+            if ! command -v aws &> /dev/null; then
+              echo "Installing AWS CLI..."
+              curl -sL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+              unzip -q awscliv2.zip
               sudo ./aws/install
-              echo "✅ AWS CLI installed"
+              rm -rf aws awscliv2.zip
             fi
             
-            # Configure AWS CLI for Cloudflare R2
             aws configure set aws_access_key_id ${{ secrets.CF_ACCESS_KEY_ID }}
             aws configure set aws_secret_access_key ${{ secrets.CF_SECRET_ACCESS_KEY }}
             aws configure set region auto
             
-            # Download files from R2
             mkdir -p files/$VERSION
             aws s3 cp s3://${{ secrets.CF_BUCKET_NAME }}/$DIRECTORY/$VERSION/ files/$VERSION/ \
               --recursive \
@@ -81,41 +72,25 @@ jobs:
           version="${{ inputs.version }}"
           manifest_filename="${{ inputs.manifest-filename }}"
 
-          if [ -d "files/$version" ]; then
-            manifest_path="files/$version/manifest.json"
-            
-            if [ -f "$manifest_path" ]; then
-              mkdir -p "output/$version"
-              cp -r "files/$version/"* "output/$version/"
-              
-              jq --arg version "$version" \
-                '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
-                "$manifest_path" > "output/$manifest_filename"
-            else
-              echo "Error: Manifest not found at $manifest_path"
-              exit 1
-            fi
-          else
-            device_path=$(find files -maxdepth 1 -type d ! -name files | head -1)
-            if [ -n "$device_path" ]; then
-              device=$(basename "$device_path")
-              manifest_path="$device_path/$version/manifest.json"
-              
-              if [ -f "$manifest_path" ]; then
-                mkdir -p "output/$version"
-                cp -r "$device_path/$version/"* "output/$version/"
-                jq --arg version "$version" \
-                  '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
-                  "$manifest_path" > "output/$manifest_filename"
-              else
-                echo "Error: Manifest not found at $manifest_path"
-                exit 1
-              fi
-            else
-              echo "Error: No valid structure found"
-              exit 1
-            fi
+          find_manifest() {
+            [ -f "files/$version/manifest.json" ] && echo "files/$version/manifest.json" && return
+            local device_path=$(find files -maxdepth 1 -type d ! -name files | head -1)
+            [ -n "$device_path" ] && [ -f "$device_path/$version/manifest.json" ] && echo "$device_path/$version/manifest.json"
+          }
+
+          manifest_path=$(find_manifest)
+          if [ -z "$manifest_path" ]; then
+            echo "Error: Manifest not found"
+            exit 1
           fi
+
+          source_dir=$(dirname "$manifest_path")
+          mkdir -p "output/$version"
+          cp -r "$source_dir/"* "output/$version/"
+          
+          jq --arg version "$version" \
+            '.builds[].ota.path |= $version + "/" + . | (.builds[].parts // [])[].path |= $version + "/" + .' \
+            "$manifest_path" > "output/$manifest_filename"
 
       - name: Upload ${{ inputs.manifest-filename }} to R2
         uses: ryand56/r2-upload-action@v1.4
