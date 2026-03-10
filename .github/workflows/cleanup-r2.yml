@@ -124,7 +124,7 @@ jobs:
             fi
 
             obj_date=$(aws s3api head-object --bucket "$BUCKET_NAME" --key "$obj" --query 'LastModified' --output text 2>/dev/null | cut -d'T' -f1)
-            if [ -z "$obj_date" ] || [[ "$obj_date" >= "$CUTOFF_DATE" ]]; then
+            if [[ -z "$obj_date" || "$obj_date" >= "$CUTOFF_DATE" ]]; then
               continue
             fi
 
